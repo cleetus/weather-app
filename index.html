@@ -268,12 +268,23 @@ async function reverseAndLoad(lat, lon){
 }
 async function ipLocate(){
   try {
-    const r = await fetch('https://ipapi.co/json/');
+    // Don't hang forever if the IP lookup is slow or blocked.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch('https://ipapi.co/json/', { signal: ctrl.signal });
+    clearTimeout(timer);
     const j = await r.json();
     if (j.latitude) return load(j.latitude, j.longitude, [j.city, j.region, j.country_name].filter(Boolean).join(', '));
-  } catch(e){}
-  // Final fallback
-  load(39.83, -98.58, 'Center of the US (fallback)');
+  } catch(e){ /* fall through to the friendly prompt */ }
+  locationFailed();
+}
+
+function locationFailed(){
+  const s = $('status');
+  s.innerHTML = "📍 Couldn't detect your location. Search for your city above ☝️";
+  s.classList.remove('hidden');
+  $('app').classList.add('hidden');
+  $('q').focus();
 }
 
 // ---- Load forecast ----
