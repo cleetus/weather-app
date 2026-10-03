@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Weather</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root {
     --bg: #0f1724;
@@ -112,6 +113,16 @@
   .hidden { display: none; }
   footer { text-align:center; color: var(--muted); font-size: 12px; margin-top: 10px; }
   a { color: var(--accent); }
+
+  #map { height: 400px; border-radius: 14px; overflow: hidden; z-index: 0; }
+  .map-bar {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    margin-bottom: 12px; font-size: 14px;
+  }
+  .map-bar label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .map-bar .btn { padding: 7px 12px; font-size: 14px; border-radius: 10px; }
+  .map-bar .spacer { flex: 1; }
+  #radarTime { color: var(--muted); font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -151,6 +162,18 @@
     </div>
 
     <div class="card">
+      <h3>Radar &amp; lightning</h3>
+      <div class="map-bar">
+        <label><input type="checkbox" id="tRadar" checked> Radar</label>
+        <label><input type="checkbox" id="tLtg" checked> ⚡ Lightning</label>
+        <button class="btn" id="playBtn" title="Play / pause radar loop">⏸</button>
+        <div class="spacer"></div>
+        <span id="radarTime"></span>
+      </div>
+      <div id="map"></div>
+    </div>
+
+    <div class="card">
       <h3>Next 24 hours</h3>
       <div class="hourly" id="hourly"></div>
     </div>
@@ -162,10 +185,13 @@
   </div>
 
   <footer>
-    Data from <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> (free &amp; open, no API key). Built for daily coding.
+    Forecast from <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> ·
+    radar from <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a> ·
+    lightning from <a href="https://nowcoast.noaa.gov" target="_blank" rel="noopener">NOAA nowCOAST</a> (US). Built for daily coding.
   </footer>
 </div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 // ---- Weather code -> icon + description (WMO codes) ----
 const WMO = {
@@ -240,6 +266,7 @@ $('themeBtn').onclick = () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   localStorage.setItem('wx_theme', theme);
   applyTheme();
+  if (baseLayer) baseLayer.setUrl(BASE_TILES[theme]);
 };
 
 // ---- Location ----
@@ -361,7 +388,88 @@ function render(d, label){
 
   $('status').classList.add('hidden');
   $('app').classList.remove('hidden');
+  initMap(current.lat, current.lon);
 }
+
+// ---- Radar & lightning map ----
+const BASE_TILES = {
+  dark:  'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+  light: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}'
+};
+let map, baseLayer, ltgLayer, marker, radarFrames = [], radarLayers = [], radarIdx = 0, radarTimer = null, playing = true;
+
+function initMap(lat, lon){
+  if (typeof L === 'undefined') return; // map library failed to load; rest of app still works
+  if (!map){
+    map = L.map('map').setView([lat, lon], 7);
+    baseLayer = L.tileLayer(BASE_TILES[theme], {
+      maxZoom: 16,
+      attribution: 'Tiles &copy; Esri &mdash; Esri, HERE, Garmin, &copy; OpenStreetMap contributors'
+    }).addTo(map);
+    // NOAA lightning strike density (last ~15 min), US coverage
+    ltgLayer = L.tileLayer.wms('https://nowcoast.noaa.gov/geoserver/lightning_detection/ows', {
+      layers: 'ldn_lightning_strike_density', format: 'image/png', transparent: true,
+      version: '1.3.0', opacity: 0.9, zIndex: 20, attribution: 'Lightning: NOAA'
+    });
+    if ($('tLtg').checked) ltgLayer.addTo(map);
+    loadRadar();
+    setInterval(loadRadar, 10 * 60 * 1000);                                  // new radar frames every 10 min
+    setInterval(() => ltgLayer.setParams({ _t: Date.now() }), 5 * 60 * 1000); // refresh lightning every 5 min
+  } else {
+    map.setView([lat, lon], map.getZoom());
+  }
+  if (marker) marker.setLatLng([lat, lon]);
+  else marker = L.circleMarker([lat, lon], { radius: 7, color: '#fff', weight: 2, fillColor: '#6ea8fe', fillOpacity: 1 }).addTo(map);
+  setTimeout(() => map.invalidateSize(), 50);
+}
+
+async function loadRadar(){
+  try {
+    const r = await fetch('https://api.rainviewer.com/public/weather-maps.json');
+    const j = await r.json();
+    radarLayers.forEach(l => map.removeLayer(l));
+    radarFrames = [...(j.radar.past || []), ...(j.radar.nowcast || [])];
+    radarLayers = radarFrames.map(f => L.tileLayer(`${j.host}${f.path}/256/{z}/{x}/{y}/2/1_1.png`, {
+      opacity: 0, zIndex: 10, maxNativeZoom: 7, maxZoom: 18, attribution: 'Radar: RainViewer'
+    }));
+    if ($('tRadar').checked) radarLayers.forEach(l => l.addTo(map));
+    radarIdx = (j.radar.past || []).length - 1; // start on the latest observed frame
+    showFrame(radarIdx);
+    if (playing) startLoop();
+  } catch(e){
+    $('radarTime').textContent = 'Radar unavailable';
+  }
+}
+
+function showFrame(i){
+  if (!radarLayers.length) return;
+  radarLayers.forEach((l, k) => l.setOpacity(k === i ? 0.7 : 0));
+  const f = radarFrames[i];
+  const t = new Date(f.time * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  $('radarTime').textContent = (f.time * 1000 > Date.now() ? 'Forecast ' : 'Radar ') + t;
+}
+
+function startLoop(){
+  clearInterval(radarTimer);
+  radarTimer = setInterval(() => {
+    radarIdx = (radarIdx + 1) % radarLayers.length;
+    showFrame(radarIdx);
+  }, 700);
+}
+
+$('playBtn').onclick = () => {
+  playing = !playing;
+  $('playBtn').textContent = playing ? '⏸' : '▶';
+  if (playing) startLoop(); else clearInterval(radarTimer);
+};
+$('tRadar').onchange = e => {
+  if (!map) return;
+  radarLayers.forEach(l => e.target.checked ? l.addTo(map) : map.removeLayer(l));
+};
+$('tLtg').onchange = e => {
+  if (!map) return;
+  e.target.checked ? ltgLayer.addTo(map) : map.removeLayer(ltgLayer);
+};
 
 // ---- Boot ----
 useMyLocation();

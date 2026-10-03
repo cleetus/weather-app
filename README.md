@@ -19,6 +19,8 @@ Then open **http://localhost:8731/index.html**
 
 - Current conditions — temperature, feels-like, wind, humidity, precipitation, today's high/low
 - Next 24 hours (scrollable) and a 7-day forecast
+- Animated radar map ([RainViewer](https://www.rainviewer.com), past ~2 hours) with play/pause
+- Lightning strike density overlay ([NOAA nowCOAST](https://nowcoast.noaa.gov), last ~15 min, US coverage)
 - City search with live autocomplete
 - Auto-detect location (geolocation, with IP fallback)
 - °F / °C toggle and dark / light mode (both remembered)
