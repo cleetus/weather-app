@@ -123,6 +123,33 @@
   .map-bar .btn { padding: 7px 12px; font-size: 14px; border-radius: 10px; }
   .map-bar .spacer { flex: 1; }
   #radarTime { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vel-legend { font-size: 12px; color: var(--muted); margin-top: 8px; }
+
+  /* Official NWS alerts */
+  .alert {
+    border-radius: 14px; padding: 12px 16px; margin-bottom: 10px;
+    background: var(--card); border: 1px solid var(--card-border); border-left: 6px solid #eab308;
+  }
+  .alert.sev-Extreme { border-left-color: #d946ef; background: rgba(217,70,239,.15); }
+  .alert.sev-Severe { border-left-color: #ef4444; background: rgba(239,68,68,.12); }
+  .alert.sev-Moderate { border-left-color: #f97316; }
+  .alert summary { cursor: pointer; }
+  .alert .adesc { white-space: pre-line; font-size: 13px; color: var(--muted); margin-top: 10px; max-height: 300px; overflow-y: auto; }
+
+  /* AI storm watch */
+  .sw-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .sw-head .spacer { flex: 1; }
+  .sw-head .btn { padding: 8px 14px; font-size: 14px; border-radius: 10px; }
+  .sw-level { padding: 8px 14px; border-radius: 10px; font-weight: 700; background: rgba(127,127,127,.15); }
+  .sw-level[data-l="0"] { background: #16a34a; color: #fff; }
+  .sw-level[data-l="1"] { background: #eab308; color: #111; }
+  .sw-level[data-l="2"] { background: #f97316; color: #111; }
+  .sw-level[data-l="3"] { background: #ef4444; color: #fff; }
+  .sw-level[data-l="4"] { background: #d946ef; color: #fff; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+  #swBody p { margin-bottom: 8px; line-height: 1.45; }
+  #swBody ul { margin: 0 0 8px 20px; line-height: 1.5; }
+  #swBody .fine { font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -140,6 +167,8 @@
   <div id="status" class="status">Getting your weather…</div>
 
   <div id="app" class="hidden">
+    <div id="alerts"></div>
+
     <div class="card">
       <div class="toprow">
         <div class="muted" id="place">—</div>
@@ -162,15 +191,35 @@
     </div>
 
     <div class="card">
+      <div class="toprow"><h3>🌪️ AI storm watch</h3><div class="muted" id="swTime"></div></div>
+      <div class="sw-head">
+        <div class="sw-level" id="swLevel">Off</div>
+        <div class="spacer"></div>
+        <button class="btn" id="swNotify" title="Pop-up + sound when the threat goes up">🔔 Alerts</button>
+        <button class="btn" id="swBtn">Turn on</button>
+      </div>
+      <div id="swBody">
+        <p class="muted">Every 2 minutes, reads the radar's rotation detections near you, works out which storms are
+        heading your way and when, and decides how worried to be — like a meteorologist watching the screen.
+        Turn on 🔔 Alerts to get a pop-up and sound if it goes up.</p>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>Radar &amp; lightning</h3>
       <div class="map-bar">
         <label><input type="checkbox" id="tRadar" checked> Radar</label>
         <label><input type="checkbox" id="tLtg" checked> ⚡ Lightning</label>
+        <label title="Storm-relative velocity from the nearest radar"><input type="checkbox" id="tVel"> 🌀 Velocity</label>
         <button class="btn" id="playBtn" title="Play / pause radar loop">⏸</button>
         <div class="spacer"></div>
         <span id="radarTime"></span>
       </div>
       <div id="map"></div>
+      <div class="vel-legend hidden" id="velLegend">
+        Velocity (<span id="velRadar">—</span> radar): green = wind toward the radar, red = away.
+        A tight bright-green/bright-red pair side by side = rotation.
+      </div>
     </div>
 
     <div class="card">
@@ -187,7 +236,10 @@
   <footer>
     Forecast from <a href="https://open-meteo.com" target="_blank" rel="noopener">Open-Meteo</a> ·
     radar from <a href="https://www.rainviewer.com" target="_blank" rel="noopener">RainViewer</a> ·
-    lightning from <a href="https://nowcoast.noaa.gov" target="_blank" rel="noopener">NOAA nowCOAST</a> (US). Built for daily coding.
+    lightning from <a href="https://nowcoast.noaa.gov" target="_blank" rel="noopener">NOAA nowCOAST</a> (US) ·
+    alerts from <a href="https://www.weather.gov" target="_blank" rel="noopener">NWS</a> ·
+    velocity &amp; storm cells from <a href="https://mesonet.agron.iastate.edu" target="_blank" rel="noopener">Iowa Environmental Mesonet</a>.<br>
+    AI storm watch is a second opinion only. Always follow official NWS warnings and your phone's emergency alerts.
   </footer>
 </div>
 
@@ -389,6 +441,10 @@ function render(d, label){
   $('status').classList.add('hidden');
   $('app').classList.remove('hidden');
   initMap(current.lat, current.lon);
+  sw.level = -1;          // new place: start fresh
+  sw.seenWarnings.clear();
+  if (sw.on) stormCheck(); else loadAlerts();
+  setVelocityRadar(null);
 }
 
 // ---- Radar & lightning map ----
@@ -470,6 +526,285 @@ $('tLtg').onchange = e => {
   if (!map) return;
   e.target.checked ? ltgLayer.addTo(map) : map.removeLayer(ltgLayer);
 };
+
+// ---- Official NWS alerts for this spot (US only) ----
+const SEV_ORDER = { Extreme: 0, Severe: 1, Moderate: 2, Minor: 3, Unknown: 4 };
+let lastAlerts = [];
+
+async function loadAlerts(){
+  if (!current) return [];
+  try {
+    const r = await fetch(`https://api.weather.gov/alerts/active?point=${current.lat.toFixed(4)},${current.lon.toFixed(4)}`);
+    if (!r.ok) throw new Error('outside US');
+    const j = await r.json();
+    const byEvent = new Map();   // NWS often has 2+ copies of one event; keep the first
+    j.features.map(f => f.properties).forEach(p => { if (!byEvent.has(p.event)) byEvent.set(p.event, p); });
+    lastAlerts = [...byEvent.values()].sort((a, b) =>
+      (a.event === 'Tornado Warning' ? -1 : 0) - (b.event === 'Tornado Warning' ? -1 : 0)
+      || (SEV_ORDER[a.severity] ?? 4) - (SEV_ORDER[b.severity] ?? 4));
+  } catch(e){ lastAlerts = []; }
+  renderAlerts();
+  return lastAlerts;
+}
+
+function renderAlerts(){
+  const box = $('alerts'); box.innerHTML = '';
+  lastAlerts.forEach(a => {
+    const d = document.createElement('details');
+    d.className = 'alert sev-' + (a.event === 'Tornado Warning' ? 'Extreme' : a.severity);
+    const s = document.createElement('summary');
+    // "ends" is when the hazard ends; without it, "expires" is only when NWS will update the alert
+    const when = a.ends || a.expires;
+    s.innerHTML = '<b></b> <span class="muted"></span>';
+    s.children[0].textContent = (a.event === 'Tornado Warning' ? '🌪️ ' : '⚠️ ') + a.event;
+    s.children[1].textContent = when ? (a.ends ? '· until ' : '· next update ')
+      + new Date(when).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+    const body = document.createElement('div');
+    body.className = 'adesc';
+    body.textContent = [a.headline, a.description, a.instruction].filter(Boolean).join('\n\n');
+    d.append(s, body);
+    box.appendChild(d);
+  });
+}
+
+// ---- Velocity layer (nearest radar, storm-relative velocity) ----
+const IEM = 'https://mesonet.agron.iastate.edu';
+let velLayer = null, velRadar = null, radarSites = null;
+
+async function nearestRadar(lat, lon){
+  if (!radarSites){
+    try { radarSites = (await (await fetch(IEM + '/geojson/network/NEXRAD.geojson')).json()).features; }
+    catch(e){ return null; }
+  }
+  let best = null, bd = 1e9;
+  radarSites.forEach(f => {
+    const [x, y] = f.geometry.coordinates, d = miles(lat, lon, y, x);
+    if (d < bd){ bd = d; best = f.id; }
+  });
+  return bd < 250 ? best : null;
+}
+
+// radar = a site id (e.g. "MOB"), or null to use the one nearest your location
+async function setVelocityRadar(radar){
+  if (!map || !current) return;
+  radar = radar || await nearestRadar(current.lat, current.lon);
+  if (!radar) return;
+  const url = `${IEM}/cache/tile.py/1.0.0/ridge::${radar}-N0S-0/{z}/{x}/{y}.png?t=${Math.floor(Date.now() / 120000)}`;
+  if (velLayer && velRadar === radar) velLayer.setUrl(url);
+  else {
+    if (velLayer) map.removeLayer(velLayer);
+    velLayer = L.tileLayer(url, { opacity: 0.8, zIndex: 15, maxNativeZoom: 10, maxZoom: 18, attribution: 'Velocity: IEM/NWS' });
+    if ($('tVel').checked) velLayer.addTo(map);
+  }
+  velRadar = radar;
+  $('velRadar').textContent = radar;
+}
+$('tVel').onchange = e => {
+  $('velLegend').classList.toggle('hidden', !e.target.checked);
+  if (!map || !velLayer) return;
+  e.target.checked ? velLayer.addTo(map) : map.removeLayer(velLayer);
+};
+
+// ---- AI storm watch ----
+// Same rules as tools/tornado_check.py (which Claude uses in loop mode).
+const LEVELS = ['All clear', 'Stay alert', 'Rotation nearby — watch closely', 'Tornado threat — would warn', 'TORNADO WARNING — take shelter'];
+const sw = { on: localStorage.getItem('wx_sw') === '1', timer: null, level: -1, seenWarnings: new Set(), markers: null };
+
+function miles(lat1, lon1, lat2, lon2){
+  const p = Math.PI / 180;
+  const a = Math.sin((lat2 - lat1) * p / 2) ** 2 + Math.cos(lat1 * p) * Math.cos(lat2 * p) * Math.sin((lon2 - lon1) * p / 2) ** 2;
+  return 3958.8 * 2 * Math.asin(Math.sqrt(a));
+}
+function bearing(lat1, lon1, lat2, lon2){
+  const p = Math.PI / 180;
+  const y = Math.sin((lon2 - lon1) * p) * Math.cos(lat2 * p);
+  const x = Math.cos(lat1 * p) * Math.sin(lat2 * p) - Math.sin(lat1 * p) * Math.cos(lat2 * p) * Math.cos((lon2 - lon1) * p);
+  return (Math.atan2(y, x) / p + 360) % 360;
+}
+const compass = d => ['N','NE','E','SE','S','SW','W','NW'][Math.round(d / 45) % 8];
+
+// Where is this storm cell, where is it going, and how close will it pass?
+// Radar storm motion "drct" is the direction it is moving FROM.
+function track(f, lat, lon){
+  const [clon, clat] = f.geometry.coordinates, p = f.properties;
+  const dist = miles(lat, lon, clat, clon), brg = bearing(lat, lon, clat, clon);
+  const mph = (p.sknt || 0) * 1.15078;
+  const x = dist * Math.sin(brg * Math.PI / 180), y = dist * Math.cos(brg * Math.PI / 180);
+  if (mph < 3) return { dist, brg, mph, to: null, cpa: dist, eta: null };
+  const to = ((p.drct || 0) + 180) % 360, r = to * Math.PI / 180;
+  const vx = mph * Math.sin(r), vy = mph * Math.cos(r);
+  const t = -(x * vx + y * vy) / (vx * vx + vy * vy);   // hours to closest approach
+  if (t <= 0) return { dist, brg, mph, to, cpa: dist, eta: null };
+  return { dist, brg, mph, to, cpa: Math.hypot(x + vx * t, y + vy * t), eta: t * 60 };
+}
+
+const RADAR_NAMES = { MOB: 'Mobile', EOX: 'Fort Rucker', MXX: 'Maxwell AFB', TLH: 'Tallahassee', EVX: 'Eglin AFB', BMX: 'Birmingham', JGX: 'Robins AFB', FFC: 'Atlanta' };
+const strengthWord = c => c.tvs ? 'a tornado vortex signature (tight, strong rotation)'
+  : c.meso >= 10 ? `strong rotation (strength ${c.meso} of 25)`
+  : c.meso >= 5 ? `moderate rotation (strength ${c.meso} of 25)`
+  : `weak rotation (strength ${c.meso} of 25)`;
+
+async function stormCheck(){
+  if (!sw.on || !current) return;
+  const { lat, lon } = current;
+  let level = 0;
+  const reasons = [], notes = [];
+  try {
+    const [alerts, twj, attr] = await Promise.all([
+      loadAlerts(),
+      fetch('https://api.weather.gov/alerts/active?event=Tornado%20Warning').then(r => r.json()).catch(() => ({ features: [] })),
+      fetch(IEM + '/geojson/nexrad_attr.geojson?t=' + Date.now()).then(r => r.json())
+    ]);
+
+    // 1. Official warnings come first
+    const events = alerts.map(a => a.event);
+    const torHere = alerts.filter(a => a.event === 'Tornado Warning');
+    if (torHere.length){ level = 4; reasons.push('The National Weather Service has a Tornado Warning for this spot. Go to your safe place now.'); }
+    if (events.includes('Tornado Watch')){ level = Math.max(level, 1); reasons.push('Tornado Watch is in effect — conditions can produce tornadoes.'); }
+    if (events.some(e => /Hurricane|Tropical Storm/.test(e))){ level = Math.max(level, 1); reasons.push('Tropical storm nearby — its outer rain bands can spin up quick, brief tornadoes with little notice.'); }
+    let nearWarnings = 0;
+    (twj.features || []).forEach(f => {
+      const ring = f.geometry && f.geometry.coordinates[0];
+      if (!ring) return;
+      const clat = ring.reduce((s, p) => s + p[1], 0) / ring.length, clon = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+      const d = miles(lat, lon, clat, clon);
+      if (d <= 60){ nearWarnings++; notes.push(`Tornado Warning ~${Math.round(d)} mi ${compass(bearing(lat, lon, clat, clon))}: ${f.properties.areaDesc}.`); }
+    });
+    if (nearWarnings && level < 4){ level = Math.max(level, 2); reasons.push(`${nearWarnings} Tornado Warning${nearWarnings > 1 ? 's' : ''} within 60 miles.`); }
+
+    // 2. Radar storm cells within 120 mi; one storm is often seen by 2 radars, keep the strongest report
+    let cells = [];
+    attr.features.forEach(f => {
+      const [clon, clat] = f.geometry.coordinates, p = f.properties;
+      if (miles(lat, lon, clat, clon) > 120) return;
+      const tvs = p.tvs && p.tvs !== 'NONE' ? p.tvs : null;
+      const meso = /^\d+$/.test(p.meso) ? +p.meso : 0;
+      const c = { id: p.nexrad + '-' + p.storm_id, radar: p.nexrad, lat: clat, lon: clon, tvs, meso,
+                  dbz: p.max_dbz, top: p.top, vil: p.vil, valid: p.valid, ...track(f, lat, lon) };
+      const dup = cells.findIndex(o => miles(o.lat, o.lon, clat, clon) < 6);
+      if (dup < 0) cells.push(c);
+      else if ((tvs ? 100 : 0) + meso > (cells[dup].tvs ? 100 : 0) + cells[dup].meso) cells[dup] = c;
+    });
+    const threat = c => (c.tvs ? 100 : 0) + c.meso * 6 + (c.eta != null && c.cpa < 15 ? 30 - c.cpa : 0) - c.dist / 4;
+    cells.sort((a, b) => threat(b) - threat(a));
+    const rot = cells.filter(c => c.tvs || c.meso);
+
+    rot.forEach(c => {
+      const heading = c.eta != null && c.cpa <= 10 && c.eta <= 60;
+      if (c.tvs && c.dist <= 40 && heading){ level = Math.max(level, 3); reasons.push(`Radar shows a tornado signature headed your way (${c.id}).`); }
+      else if (c.tvs && c.dist <= 60){ level = Math.max(level, 2); reasons.push(`Radar shows a tornado signature ${Math.round(c.dist)} mi ${compass(c.brg)} (${c.id}).`); }
+      else if (c.meso >= 5 && c.dist <= 40 && heading){ level = Math.max(level, 2); reasons.push(`A rotating storm is headed your way (${c.id}).`); }
+      else if (c.meso >= 5 && c.dist <= 60){ level = Math.max(level, 1); reasons.push(`A rotating storm is ${Math.round(c.dist)} mi ${compass(c.brg)} (${c.id}).`); }
+    });
+
+    // 3. Write it up the way a meteorologist would talk it through
+    const lines = [];
+    if (!cells.length) lines.push('No storms on radar within 120 miles.');
+    else if (!rot.length) lines.push(`${cells.length} storm cell${cells.length > 1 ? 's' : ''} within 120 miles. None show rotation on radar.`);
+    rot.slice(0, 4).forEach(c => {
+      const where = `${Math.round(c.dist)} mi ${compass(c.brg)}`;
+      const move = c.to == null ? 'barely moving' : `moving ${compass(c.to)} at ${Math.round(c.mph)} mph`;
+      const pass = c.eta == null ? 'It is not heading toward you.'
+        : `If it holds course, it passes about ${Math.round(c.cpa)} mi from you in ${Math.round(c.eta)} min.`;
+      const shaky = c.dbz < 40 || c.top < 10 ? ' (shallow, weak storm — could be a false alarm)' : '';
+      lines.push(`Storm ${c.id} (${RADAR_NAMES[c.radar] || c.radar} radar), ${where}, ${move}: ${strengthWord(c)}${shaky}. ${pass}`);
+    });
+    if (rot.length > 4) lines.push(`…and ${rot.length - 4} more weak rotation detections farther out.`);
+
+    renderStormWatch(level, [...new Set(reasons)], notes, lines, cells[0] && cells[0].valid);
+    drawCells(rot);
+    // Point the velocity layer at the radar that sees the worst rotating storm nearby
+    setVelocityRadar(rot[0] && rot[0].dist <= 80 ? rot[0].radar : null);
+
+    // 4. Alert on the way up (not for "stay alert", which can last for days)
+    const newWarning = torHere.some(a => !sw.seenWarnings.has(a.id));
+    torHere.forEach(a => sw.seenWarnings.add(a.id));
+    if ((level >= 2 && level > sw.level) || newWarning) alertUser(level, reasons[0] || LEVELS[level]);
+    sw.level = level;
+  } catch(e){
+    $('swTime').textContent = 'Check failed — retrying in 2 min';
+  }
+}
+
+function renderStormWatch(level, reasons, notes, lines, radarTime){
+  $('swLevel').dataset.l = level;
+  $('swLevel').textContent = LEVELS[level];
+  $('swTime').textContent = 'Checked ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    + (radarTime ? ' · radar ' + new Date(radarTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '');
+  const body = $('swBody'); body.innerHTML = '';
+  const add = (tag, text, cls) => { const el = document.createElement(tag); el.textContent = text; if (cls) el.className = cls; body.appendChild(el); return el; };
+  if (reasons.length){ const ul = add('ul', ''); reasons.forEach(r => { const li = document.createElement('li'); li.textContent = r; ul.appendChild(li); }); }
+  notes.forEach(n => add('p', n));
+  lines.forEach(l => add('p', l));
+  add('p', 'Second opinion only — always follow NWS warnings and your phone\'s emergency alerts.', 'fine');
+}
+
+function drawCells(rot){
+  if (!map) return;
+  if (!sw.markers) sw.markers = L.layerGroup().addTo(map);
+  sw.markers.clearLayers();
+  rot.forEach(c => {
+    const col = c.tvs ? '#d946ef' : c.meso >= 5 ? '#ef4444' : '#eab308';
+    L.circleMarker([c.lat, c.lon], { radius: c.tvs ? 10 : 7, color: col, weight: 3, fillOpacity: 0.2, zIndex: 30 })
+      .bindPopup(`<b>${c.id}</b><br>${c.tvs || 'Rotation ' + c.meso + ' of 25'}<br>${c.dbz} dBZ, tops ${c.top}k ft`)
+      .addTo(sw.markers);
+    if (c.to != null){   // dashed line = where it'll be in an hour
+      const r = c.to * Math.PI / 180, d = c.mph;
+      const end = [c.lat + d * Math.cos(r) / 69, c.lon + d * Math.sin(r) / (69 * Math.cos(c.lat * Math.PI / 180))];
+      L.polyline([[c.lat, c.lon], end], { color: col, weight: 2, dashArray: '6 6' }).addTo(sw.markers);
+    }
+  });
+}
+
+// Pop-up + sound. Sound needs one click on the page first (browser rule), which turning this on provides.
+let audioCtx = null;
+function beep(times){
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    for (let i = 0; i < times; i++){
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain(), t = audioCtx.currentTime + i * 0.6;
+      o.frequency.setValueAtTime(880, t); o.frequency.linearRampToValueAtTime(1320, t + 0.4);
+      g.gain.setValueAtTime(0.25, t); g.gain.linearRampToValueAtTime(0, t + 0.5);
+      o.connect(g).connect(audioCtx.destination); o.start(t); o.stop(t + 0.5);
+    }
+  } catch(e){}
+}
+function alertUser(level, msg){
+  beep(level >= 3 ? 6 : 2);
+  if ('Notification' in window && Notification.permission === 'granted'){
+    new Notification((level >= 3 ? '🌪️ ' : '⚠️ ') + LEVELS[level], { body: msg + ' — ' + (current ? current.label : ''), requireInteraction: level >= 3, tag: 'stormwatch' });
+  }
+}
+
+function setStormWatch(on){
+  sw.on = on;
+  localStorage.setItem('wx_sw', on ? '1' : '0');
+  $('swBtn').textContent = on ? 'Turn off' : 'Turn on';
+  clearInterval(sw.timer);
+  if (on){
+    sw.level = -1;
+    sw.timer = setInterval(stormCheck, 2 * 60 * 1000);
+    $('swLevel').textContent = 'Checking…';
+    stormCheck();
+  } else {
+    delete $('swLevel').dataset.l;
+    $('swLevel').textContent = 'Off';
+    $('swTime').textContent = '';
+    if (sw.markers) sw.markers.clearLayers();
+  }
+}
+$('swBtn').onclick = () => { beep(0); setStormWatch(!sw.on); };   // beep(0) unlocks sound for later
+function showNotifyState(){
+  const p = 'Notification' in window ? Notification.permission : 'denied';
+  $('swNotify').textContent = p === 'granted' ? '🔔 Alerts on' : p === 'denied' ? '🔕 Alerts blocked' : '🔔 Turn on alerts';
+}
+$('swNotify').onclick = async () => {
+  beep(1);
+  if ('Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+  showNotifyState();
+};
+showNotifyState();
+if (sw.on){ $('swBtn').textContent = 'Turn off'; sw.timer = setInterval(stormCheck, 2 * 60 * 1000); }
 
 // ---- Boot ----
 useMyLocation();

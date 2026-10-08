@@ -21,6 +21,10 @@ Then open **http://localhost:8731/index.html**
 - Next 24 hours (scrollable) and a 7-day forecast
 - Animated radar map ([RainViewer](https://www.rainviewer.com), past ~2 hours) with play/pause
 - Lightning strike density overlay ([NOAA nowCOAST](https://nowcoast.noaa.gov), last ~15 min, US coverage)
+- Official NWS alerts for your spot (US), tornado warnings first
+- **🌪️ AI storm watch**: every 2 min, reads the NEXRAD radar's own rotation detections (tornado vortex signatures and mesocyclones) near you, projects each storm's track (how close it passes and when), and rates the threat from "All clear" to "Tornado warning — take shelter". Pop-up + sound when the threat goes up. Rotating storms are circled on the map with a dashed line showing where they'll be in an hour. *A second opinion only: always follow NWS warnings.*
+- 🌀 Storm-relative velocity overlay from the nearest radar ([IEM](https://mesonet.agron.iastate.edu)); a tight green/red pair = rotation
+- `tools/tornado_check.py`: the same check from the command line, plus a cropped velocity + reflectivity image of the worst storm (Claude uses it in loop mode). `python tools/tornado_check.py --lat 35.47 --lon -97.52` (or save your spot in `tools/home.json`, which is git-ignored) (needs `pip install pillow` for the image)
 - City search with live autocomplete
 - Auto-detect location (geolocation, with IP fallback)
 - °F / °C toggle and dark / light mode (both remembered)

@@ -8,3 +8,8 @@ desktop.ini
 # Python (local dev server)
 __pycache__/
 *.pyc
+
+# tornado_check.py output
+tools/out/
+# your home location for tornado_check.py (kept off GitHub)
+tools/home.json
