@@ -15,9 +15,11 @@ It is a second opinion only — NWS warnings always come first.
 Usage:  python tools/tornado_check.py --lat 35.47 --lon -97.52 --label "Home"
         or put {"lat": .., "lon": .., "label": ".."} in tools/home.json (git-ignored,
         so your home location never gets pushed) and run it with no arguments.
+        --alarm-level 3  sounds tools/alarm.ps1 (siren + voice + pop-up) when the level
+        reaches 3 or 4; it re-alarms only if the level goes up or a new warning is issued.
 Needs:  pip install pillow   (only for the velocity image)
 """
-import argparse, json, math, os, sys, urllib.request
+import argparse, json, math, os, subprocess, sys, urllib.request
 from datetime import datetime, timezone
 
 UA = {"User-Agent": "weather-app tornado_check (github.com/cleetus/weather-app)"}
@@ -140,6 +142,7 @@ def main():
     ap.add_argument("--label", default=home.get("label", "Home"))
     ap.add_argument("--radius", type=float, default=120, help="miles to look for storm cells")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"))
+    ap.add_argument("--alarm-level", type=int, default=0, help="sound the loud alarm at this level or higher (0 = never)")
     a = ap.parse_args()
     if a.lat is None or a.lon is None:
         ap.error("give --lat and --lon, or create tools/home.json")
@@ -152,6 +155,7 @@ def main():
     here = get(f"https://api.weather.gov/alerts/active?point={lat},{lon}")["features"]
     events = [f["properties"]["event"] for f in here]
     print("\nNWS alerts here:", ", ".join(events) if events else "none")
+    warning_ids = [f["properties"]["id"] for f in here if f["properties"]["event"] == "Tornado Warning"]
     if "Tornado Warning" in events:
         level, reasons = 4, ["NWS Tornado Warning is in effect for this location"]
     if "Tornado Watch" in events:
@@ -250,9 +254,37 @@ def main():
     print(f"\nSUGGESTED LEVEL {level}: {LEVELS[level]}")
     for r in dict.fromkeys(reasons):
         print("  -", r)
+    if a.alarm_level:
+        maybe_alarm(level, list(dict.fromkeys(reasons)), warning_ids, a)
+
+
+def maybe_alarm(level, reasons, warning_ids, a):
+    """Loud alarm, but only once per threat: again only if the level goes up or NWS issues a new warning."""
+    state_file = os.path.join(a.out, "alarm_state.json")
+    try:
+        state = json.load(open(state_file))
+    except Exception:
+        state = {"level": 0, "warnings": []}
+    new_warning = any(w not in state["warnings"] for w in warning_ids)
+    if level >= a.alarm_level and (level > state["level"] or new_warning):
+        msg = ("Tornado warning for your home. Take shelter now."
+               if level == 4 else "Tornado threat headed toward your home. Get ready to take shelter.")
+        if reasons:
+            msg += " " + reasons[0] + "."
+        ps1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alarm.ps1")
+        subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, "-Message", msg])
+        print("ALARM SOUNDED:", msg)
+    os.makedirs(a.out, exist_ok=True)
+    # once things calm down (level 0), forget old warnings so the next storm alarms again
+    json.dump({"level": level, "warnings": sorted(set(state["warnings"]) | set(warning_ids)) if level else []},
+              open(state_file, "w"))
 
 
 if __name__ == "__main__":
+    if sys.stdout is None:   # started by pythonw (Task Scheduler): log to a file instead
+        os.makedirs(os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"), exist_ok=True)
+        sys.stdout = sys.stderr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "out",
+                                                    "last_check.txt"), "w", encoding="utf-8")
     try:
         main()
     except Exception as e:
