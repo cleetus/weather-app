@@ -150,9 +150,32 @@
   #swBody p { margin-bottom: 8px; line-height: 1.45; }
   #swBody ul { margin: 0 0 8px 20px; line-height: 1.5; }
   #swBody .fine { font-size: 12px; color: var(--muted); }
+
+  /* Full-screen tornado alarm */
+  #bigAlarm {
+    position: fixed; inset: 0; z-index: 9999; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px; padding: 24px 16px; text-align: center;
+    background: #b91c1c; color: #fff; animation: flash 1s infinite;
+  }
+  #bigAlarm.hidden { display: none; }
+  @keyframes flash { 50% { background: #7f1d1d; } }
+  #bigTitle { font-size: clamp(34px, 9vw, 72px); font-weight: 800; letter-spacing: 1px; }
+  #bigMsg { font-size: 20px; max-width: 640px; }
+  #bigDo { font-size: 22px; font-weight: 700; max-width: 640px; }
+  #bigStop {
+    margin-top: 10px; padding: 18px 34px; font-size: 22px; font-weight: 700; border-radius: 16px;
+    border: 3px solid #fff; background: #fff; color: #b91c1c; cursor: pointer;
+  }
 </style>
 </head>
 <body>
+<div id="bigAlarm" class="hidden" role="alertdialog" aria-live="assertive">
+  <div id="bigTitle">TORNADO WARNING</div>
+  <div id="bigMsg"></div>
+  <div id="bigDo"></div>
+  <button id="bigStop">I'm safe — stop alarm</button>
+</div>
+
 <div class="wrap">
   <header>
     <div class="search">
@@ -195,6 +218,7 @@
       <div class="sw-head">
         <div class="sw-level" id="swLevel">Off</div>
         <div class="spacer"></div>
+        <button class="btn" id="swTest" title="Play the tornado alarm for 8 seconds">🔊 Test alarm</button>
         <button class="btn" id="swNotify" title="Pop-up + sound when the threat goes up">🔔 Alerts</button>
         <button class="btn" id="swBtn">Turn on</button>
       </div>
@@ -769,8 +793,65 @@ function beep(times){
     }
   } catch(e){}
 }
+// Browsers block sound until the page has been clicked once. If storm watch was left on from last
+// time, the first click or key press anywhere on the page unlocks it.
+['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, () => {
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch(e){}
+}, { once: true }));
+
+function say(text){
+  try {
+    const u = new SpeechSynthesisUtterance(text);
+    u.volume = 1; u.rate = 0.95;
+    speechSynthesis.speak(u);
+  } catch(e){}
+}
+
+// Big alarm: full-screen red banner + siren that keeps going + spoken warning,
+// until someone taps "I'm safe" (or 10 minutes pass). Browsers can't raise the
+// device volume, so the volume has to be left up.
+const big = { siren: null, timers: [] };
+function bigAlarm(level, msg, test){
+  stopBigAlarm();
+  $('bigTitle').textContent = (test ? 'TEST — ' : '') + (level >= 4 ? 'TORNADO WARNING' : 'TORNADO THREAT');
+  $('bigMsg').textContent = msg;
+  $('bigDo').textContent = level >= 4
+    ? 'Go to your safe place now: lowest floor, small inside room, away from windows. Cover your head.'
+    : 'Get ready to take shelter. Have shoes, phone, and a flashlight with you.';
+  $('bigAlarm').classList.remove('hidden');
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    audioCtx.resume();
+    // siren: a loud tone whose pitch is swept up and down by a slow wobble
+    const o = audioCtx.createOscillator(), lfo = audioCtx.createOscillator();
+    const lfoGain = audioCtx.createGain(), g = audioCtx.createGain();
+    o.type = 'sawtooth'; o.frequency.value = 950;
+    lfo.frequency.value = 0.5; lfoGain.gain.value = 350;
+    lfo.connect(lfoGain).connect(o.frequency);
+    g.gain.value = 0.8;
+    o.connect(g).connect(audioCtx.destination);
+    o.start(); lfo.start();
+    big.siren = [o, lfo];
+  } catch(e){}
+  const words = (test ? 'This is a test. ' : '') + $('bigTitle').textContent.replace('TEST — ', '') + '. ' + $('bigDo').textContent;
+  say(words);
+  big.timers.push(setInterval(() => say(words), 12000));
+  big.timers.push(setTimeout(stopBigAlarm, test ? 8000 : 10 * 60 * 1000));
+}
+function stopBigAlarm(){
+  if (big.siren) big.siren.forEach(n => { try { n.stop(); } catch(e){} });
+  big.siren = null;
+  big.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
+  big.timers = [];
+  try { speechSynthesis.cancel(); } catch(e){}
+  $('bigAlarm').classList.add('hidden');
+}
+$('bigStop').onclick = stopBigAlarm;
+$('swTest').onclick = () => bigAlarm(3, 'Testing the alarm. It stops by itself in 8 seconds.', true);
+
 function alertUser(level, msg){
-  beep(level >= 3 ? 6 : 2);
+  if (level >= 3) bigAlarm(level, msg);
+  else { beep(3); say(LEVELS[level] + '. ' + msg); }
   if ('Notification' in window && Notification.permission === 'granted'){
     new Notification((level >= 3 ? '🌪️ ' : '⚠️ ') + LEVELS[level], { body: msg + ' — ' + (current ? current.label : ''), requireInteraction: level >= 3, tag: 'stormwatch' });
   }
