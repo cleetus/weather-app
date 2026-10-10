@@ -19,7 +19,7 @@ Usage:  python tools/tornado_check.py --lat 35.47 --lon -97.52 --label "Home"
         reaches 3 or 4; it re-alarms only if the level goes up or a new warning is issued.
 Needs:  pip install pillow   (only for the velocity image)
 """
-import argparse, json, math, os, subprocess, sys, urllib.request
+import argparse, json, math, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
 UA = {"User-Agent": "weather-app tornado_check (github.com/cleetus/weather-app)"}
@@ -28,11 +28,18 @@ LEVELS = ["All clear", "Stay alert", "Rotation nearby - watch closely",
           "Tornado threat - would warn", "TORNADO WARNING - take shelter"]
 
 
-def get(url, binary=False):
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=25) as r:
-        data = r.read()
-    return data if binary else json.loads(data)
+def get(url, binary=False, tries=3):
+    # storms make home internet flaky; retry a dropped download before giving up
+    for i in range(tries):
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=25) as r:
+                data = r.read()
+            return data if binary else json.loads(data)
+        except Exception:
+            if i == tries - 1:
+                raise
+            time.sleep(3)
 
 
 def miles(lat1, lon1, lat2, lon2):

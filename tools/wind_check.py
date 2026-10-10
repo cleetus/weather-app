@@ -16,7 +16,7 @@ KT = 1.15078
 
 
 def get(url):
-    return json.loads(urllib.request.urlopen(urllib.request.Request(url, headers=t.UA), timeout=25).read())
+    return t.get(url)   # same retrying download as tornado_check
 
 
 def main():
