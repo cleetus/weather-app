@@ -58,12 +58,15 @@ def main():
         dirs = t.compass(wd) if wd is not None else "?"
         print(f"  {name} ({d:.0f} mi): {w if w is not None else '?'} mph from {dirs}, gust "
               f"{g if g is not None else 'n/a'} mph at {tm}")
-    m = get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            "&current=wind_speed_10m,wind_gusts_10m&hourly=wind_gusts_10m&forecast_hours=6"
-            "&wind_speed_unit=mph&timezone=America/Chicago")
-    print(f"  Forecast for home now: {m['current']['wind_speed_10m']:.0f} mph, gusts "
-          f"{m['current']['wind_gusts_10m']:.0f} mph; next 6 h peak gust "
-          f"{max(m['hourly']['wind_gusts_10m']):.0f} mph")
+    try:   # the forecast is extra; observed wind and the alert must still work without it
+        m = get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+                "&current=wind_speed_10m,wind_gusts_10m&hourly=wind_gusts_10m&forecast_hours=6"
+                "&wind_speed_unit=mph&timezone=America/Chicago")
+        print(f"  Forecast for home now: {m['current']['wind_speed_10m']:.0f} mph, gusts "
+              f"{m['current']['wind_gusts_10m']:.0f} mph; next 6 h peak gust "
+              f"{max(m['hourly']['wind_gusts_10m']):.0f} mph")
+    except Exception as e:
+        print(f"  Forecast unavailable right now ({type(e).__name__})")
 
     state_file = os.path.join(HERE, "out", "wind_state.json")
     try:
