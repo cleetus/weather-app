@@ -364,22 +364,27 @@ function useMyLocation(){
   $('status').textContent = 'Getting your location…';
   $('status').classList.remove('hidden');
   if (navigator.geolocation){
+    // The browser's timeout doesn't start until the permission prompt is answered, and on some
+    // phones neither callback ever fires; fall back to IP location if nothing happens in 10s.
+    let done = false;
+    const once = fn => (...args) => { if (!done){ done = true; clearTimeout(watchdog); fn(...args); } };
+    const watchdog = setTimeout(once(ipLocate), 10000);
     navigator.geolocation.getCurrentPosition(
-      pos => reverseAndLoad(pos.coords.latitude, pos.coords.longitude),
-      () => ipLocate(),
-      { timeout: 8000 }
+      once(pos => reverseAndLoad(pos.coords.latitude, pos.coords.longitude)),
+      once(() => ipLocate()),
+      { timeout: 8000, maximumAge: 10 * 60 * 1000 }
     );
   } else ipLocate();
 }
 async function reverseAndLoad(lat, lon){
   let label = 'Your location';
   try {
-    const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?latitude=${lat}&longitude=${lon}&count=1&language=en`);
+    // Open-Meteo's geocoder only searches by name, so use a free reverse geocoder for the label.
+    const r = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`,
+      { signal: AbortSignal.timeout(4000) });
     const j = await r.json();
-    if (j.results && j.results[0]){
-      const p = j.results[0];
-      label = [p.name, p.admin1, p.country].filter(Boolean).join(', ');
-    }
+    const name = j.city || j.locality;
+    if (name) label = [name, j.principalSubdivision].filter(Boolean).join(', ');
   } catch(e){}
   load(lat, lon, label);
 }
